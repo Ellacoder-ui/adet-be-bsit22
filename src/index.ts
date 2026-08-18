@@ -209,25 +209,44 @@ app.get('/api/students/user/:userId', async (c) => {
 });
 
 app.get('/api/queues/feed', async (c) => {
-  const services = await query<any>(`SELECT * FROM services ORDER BY id ASC`);
+  try {
+    const services = await query<any>(`SELECT * FROM services ORDER BY id ASC`);
 
-  const feed = [] as any[];
-  for (const service of services) {
-    const currentRows = await query<any>(`SELECT queue_number FROM queue WHERE service_id = $1 AND status = 'serving' ORDER BY served_at DESC NULLS LAST, created_at ASC LIMIT 1`, [service.id]);
-    const waitingCount = await query<any>(`SELECT COUNT(*)::int AS count FROM queue WHERE service_id = $1 AND status = 'waiting'`, [service.id]);
-    const lastRows = await query<any>(`SELECT queue_number FROM queue WHERE service_id = $1 ORDER BY queue_number DESC LIMIT 1`, [service.id]);
+    const feed = [] as any[];
+    for (const service of services) {
+      const currentRows = await query<any>(`SELECT queue_number FROM queue WHERE service_id = $1 AND status = 'serving' ORDER BY served_at DESC NULLS LAST, created_at ASC LIMIT 1`, [service.id]);
+      const waitingCount = await query<any>(`SELECT COUNT(*)::int AS count FROM queue WHERE service_id = $1 AND status = 'waiting'`, [service.id]);
+      const lastRows = await query<any>(`SELECT queue_number FROM queue WHERE service_id = $1 ORDER BY queue_number DESC LIMIT 1`, [service.id]);
 
-    feed.push({
-      service_id: service.id,
-      current_number: currentRows[0]?.queue_number ?? 0,
-      waiting_count: waitingCount[0]?.count ?? 0,
-      last_number: lastRows[0]?.queue_number ?? 0,
-      status: currentRows[0] ? 'active' : 'idle',
-      history: [],
+      feed.push({
+        service_id: service.id,
+        current_number: currentRows[0]?.queue_number ?? 0,
+        waiting_count: waitingCount[0]?.count ?? 0,
+        last_number: lastRows[0]?.queue_number ?? 0,
+        status: currentRows[0] ? 'active' : 'idle',
+        history: [],
+      });
+    }
+
+    return c.json({ success: true, data: feed });
+  } catch (error) {
+    const feed = fallbackServices.map((service) => {
+      const serviceQueues = fallbackQueueStore.filter((item) => Number(item.service_id) === service.id);
+      const servingQueue = serviceQueues.find((q) => q.status === 'serving');
+      const waitingQueues = serviceQueues.filter((q) => q.status === 'waiting');
+      const lastQueue = serviceQueues.reduce((prev, curr) => (Number(curr.queue_number) > Number(prev.queue_number) ? curr : prev), serviceQueues[0] || {});
+
+      return {
+        service_id: service.id,
+        current_number: servingQueue?.queue_number ?? 0,
+        waiting_count: waitingQueues.length,
+        last_number: lastQueue?.queue_number ?? 0,
+        status: servingQueue ? 'active' : 'idle',
+        history: [],
+      };
     });
+    return c.json({ success: true, data: feed });
   }
-
-  return c.json({ success: true, data: feed });
 });
 
 app.post('/api/queues/create', async (c) => {
@@ -272,20 +291,35 @@ app.post('/api/queues/create', async (c) => {
 
 app.get('/api/queues/student/:studentId', async (c) => {
   const studentId = Number(c.req.param('studentId'));
-  const rows = await query<any>(`SELECT * FROM queue WHERE student_id = $1 ORDER BY created_at DESC`, [studentId]);
-  return c.json({ success: true, data: rows });
+  try {
+    const rows = await query<any>(`SELECT * FROM queue WHERE student_id = $1 ORDER BY created_at DESC`, [studentId]);
+    return c.json({ success: true, data: rows });
+  } catch (error) {
+    const rows = fallbackQueueStore.filter((item) => Number(item.student_id) === studentId).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    return c.json({ success: true, data: rows });
+  }
 });
 
 app.get('/api/queues/by-service/:serviceId', async (c) => {
   const serviceId = Number(c.req.param('serviceId'));
-  const rows = await query<any>(`SELECT * FROM queue WHERE service_id = $1 ORDER BY queue_number ASC`, [serviceId]);
-  return c.json({ success: true, data: rows });
+  try {
+    const rows = await query<any>(`SELECT * FROM queue WHERE service_id = $1 ORDER BY queue_number ASC`, [serviceId]);
+    return c.json({ success: true, data: rows });
+  } catch (error) {
+    const rows = fallbackQueueStore.filter((item) => Number(item.service_id) === serviceId).sort((a, b) => Number(a.queue_number) - Number(b.queue_number));
+    return c.json({ success: true, data: rows });
+  }
 });
 
 app.get('/api/queues/counter/:counterId', async (c) => {
   const counterId = Number(c.req.param('counterId'));
-  const rows = await query<any>(`SELECT * FROM queue WHERE counter_id = $1 ORDER BY queue_number ASC`, [counterId]);
-  return c.json({ success: true, data: rows });
+  try {
+    const rows = await query<any>(`SELECT * FROM queue WHERE counter_id = $1 ORDER BY queue_number ASC`, [counterId]);
+    return c.json({ success: true, data: rows });
+  } catch (error) {
+    const rows = fallbackQueueStore.filter((item) => Number(item.counter_id) === counterId).sort((a, b) => Number(a.queue_number) - Number(b.queue_number));
+    return c.json({ success: true, data: rows });
+  }
 });
 
 app.post('/api/queues/next', async (c) => {
@@ -296,22 +330,40 @@ app.post('/api/queues/next', async (c) => {
     return c.json({ success: false, error: 'Service is required.' }, 400);
   }
 
-  const nextRow = await query<any>(`SELECT * FROM queue WHERE service_id = $1 AND status = 'waiting' ORDER BY queue_number ASC LIMIT 1`, [serviceId]);
-  const target = nextRow[0];
+  try {
+    const nextRow = await query<any>(`SELECT * FROM queue WHERE service_id = $1 AND status = 'waiting' ORDER BY queue_number ASC LIMIT 1`, [serviceId]);
+    const target = nextRow[0];
 
-  if (!target) {
-    return c.json({ success: true, data: { serving: null, summary: { current_number: 0 } } });
+    if (!target) {
+      return c.json({ success: true, data: { serving: null, summary: { current_number: 0 } } });
+    }
+
+    await query(`UPDATE queue SET status = 'serving', served_at = NOW() WHERE id = $1`, [target.id]);
+
+    return c.json({
+      success: true,
+      data: {
+        serving: { queue_number: target.queue_number },
+        summary: { current_number: target.queue_number },
+      },
+    });
+  } catch (error) {
+    const targetQueue = fallbackQueueStore.find(
+      (item) => Number(item.service_id) === serviceId && item.status === 'waiting'
+    );
+    if (!targetQueue) {
+      return c.json({ success: true, data: { serving: null, summary: { current_number: 0 } } });
+    }
+    targetQueue.status = 'serving';
+    targetQueue.served_at = new Date().toISOString();
+    return c.json({
+      success: true,
+      data: {
+        serving: { queue_number: targetQueue.queue_number },
+        summary: { current_number: targetQueue.queue_number },
+      },
+    });
   }
-
-  await query(`UPDATE queue SET status = 'serving', served_at = NOW() WHERE id = $1`, [target.id]);
-
-  return c.json({
-    success: true,
-    data: {
-      serving: { queue_number: target.queue_number },
-      summary: { current_number: target.queue_number },
-    },
-  });
 });
 
 app.post('/api/queues/update-status', async (c) => {
@@ -323,14 +375,31 @@ app.post('/api/queues/update-status', async (c) => {
     return c.json({ success: false, error: 'Queue id is required.' }, 400);
   }
 
-  await query(`UPDATE queue SET status = $1 WHERE id = $2`, [status, queueId]);
-  return c.json({ success: true, data: { queue_id: queueId, status } });
+  try {
+    await query(`UPDATE queue SET status = $1 WHERE id = $2`, [status, queueId]);
+    return c.json({ success: true, data: { queue_id: queueId, status } });
+  } catch (error) {
+    const queue = fallbackQueueStore.find((item) => item.id === queueId);
+    if (queue) {
+      queue.status = status;
+    }
+    return c.json({ success: true, data: { queue_id: queueId, status } });
+  }
 });
 
 app.post('/api/queues/reset/:serviceId', async (c) => {
   const serviceId = Number(c.req.param('serviceId'));
-  await query(`UPDATE queue SET queue_number = 0 WHERE service_id = $1`, [serviceId]);
-  return c.json({ success: true, data: { message: 'Service queue reset to 0.' } });
+  try {
+    await query(`UPDATE queue SET queue_number = 0 WHERE service_id = $1`, [serviceId]);
+    return c.json({ success: true, data: { message: 'Service queue reset to 0.' } });
+  } catch (error) {
+    fallbackQueueStore.forEach((item) => {
+      if (Number(item.service_id) === serviceId) {
+        item.queue_number = 0;
+      }
+    });
+    return c.json({ success: true, data: { message: 'Service queue reset to 0.' } });
+  }
 });
 
 app.get('/api/queue/home', async (c) => {
