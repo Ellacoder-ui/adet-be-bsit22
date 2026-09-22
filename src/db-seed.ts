@@ -48,9 +48,22 @@ async function seed() {
         counter_id INTEGER,
         queue_number INTEGER NOT NULL,
         status VARCHAR(30) NOT NULL DEFAULT 'waiting',
+        priority_type VARCHAR(20) NOT NULL DEFAULT 'regular',
         created_at TIMESTAMP DEFAULT NOW(),
         served_at TIMESTAMP,
         cancelled_at TIMESTAMP
+      );
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS queue_logs (
+        id SERIAL PRIMARY KEY,
+        service_id INTEGER REFERENCES services(id) ON DELETE CASCADE,
+        queue_number INTEGER NOT NULL,
+        action VARCHAR(50) NOT NULL,
+        previous_number INTEGER,
+        undone INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT NOW()
       );
     `);
 
@@ -64,27 +77,32 @@ async function seed() {
       );
     `);
 
-    const staffExists = await client.query(`SELECT id FROM users WHERE email = $1`, ['staff1234@liceo.edu.ph']);
-    if (staffExists.rowCount === 0) {
-      const staffResult = await client.query(
-        `INSERT INTO users (name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id`,
-        ['Staff User', 'staff1234@liceo.edu.ph', 'staff123x', 'staff']
-      );
-      await client.query(
-        `INSERT INTO students (user_id, student_number, department, year_level) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
-        [staffResult.rows[0].id, 'STF-001', 'Administration', 'Staff']
-      );
-    }
+    const seedUsers = [
+      { name: 'Kent Bitanghol', email: 'kvbitanghol05181@liceo.edu.ph', password_hash: 'kent123x', role: 'student', student_number: '2023-001', dept: 'BSIT', yr: '4th Year' },
+      { name: 'Maria Santos', email: 'msantos@liceo.edu.ph', password_hash: 'student123', role: 'student', student_number: '2023-002', dept: 'BSN', yr: '2nd Year' },
+      { name: 'Juan Dela Cruz', email: 'jdelacruz@liceo.edu.ph', password_hash: 'student123', role: 'student', student_number: '2023-003', dept: 'BSBA', yr: '3rd Year' },
+      { name: 'Alex Rivera', email: 'arivera@liceo.edu.ph', password_hash: 'student123', role: 'student', student_number: '2023-004', dept: 'BSCS', yr: '1st Year' },
+      { name: 'Staff User', email: 'staff1234@liceo.edu.ph', password_hash: 'staff123x', role: 'staff', student_number: 'STF-001', dept: 'Administration', yr: 'Staff' },
+      { name: 'Cashier Counter 2', email: 'cashier2@liceo.edu.ph', password_hash: 'staff123', role: 'staff', student_number: 'STF-002', dept: 'Treasury', yr: 'Staff' },
+      { name: 'Cashier Counter 3', email: 'cashier3@liceo.edu.ph', password_hash: 'staff123', role: 'staff', student_number: 'STF-003', dept: 'Treasury', yr: 'Staff' },
+    ];
 
-    const sampleStudent = await client.query(`SELECT id FROM users WHERE email = $1`, ['kvbitanghol05181@liceo.edu.ph']);
-    if (sampleStudent.rowCount === 0) {
-      const studentResult = await client.query(
-        `INSERT INTO users (name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id`,
-        ['Kent Bitanghol', 'kvbitanghol05181@liceo.edu.ph', 'kent123x', 'student']
-      );
+    for (const u of seedUsers) {
+      const exists = await client.query(`SELECT id FROM users WHERE email = $1`, [u.email]);
+      let userId: number;
+      if (exists.rowCount === 0) {
+        const insertRes = await client.query(
+          `INSERT INTO users (name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id`,
+          [u.name, u.email, u.password_hash, u.role]
+        );
+        userId = insertRes.rows[0].id;
+      } else {
+        userId = exists.rows[0].id;
+      }
+
       await client.query(
         `INSERT INTO students (user_id, student_number, department, year_level) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
-        [studentResult.rows[0].id, '2023-001', 'BSIT', '4th Year']
+        [userId, u.student_number, u.dept, u.yr]
       );
     }
 
